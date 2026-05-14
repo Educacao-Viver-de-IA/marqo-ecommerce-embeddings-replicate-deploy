@@ -1,0 +1,23 @@
+build:
+  gpu: true
+  cuda: "12.4"
+  python_version: "3.11"
+  python_packages:
+    - "torch==2.6.0"
+    - "torchvision==0.21.0"
+    - "open-clip-torch>=2.30.0"
+    - "transformers>=4.51.0"
+    - "huggingface_hub>=0.24.0"
+    - "pillow>=10.0.0"
+    - "numpy>=1.26.0"
+  system_packages:
+    - libgl1
+    - libglib2.0-0
+  run:
+    - command: python -c "import os; os.environ['HF_TOKEN']=open('/run/secrets/HF_TOKEN').read().strip(); from huggingface_hub import snapshot_download; snapshot_download(repo_id='Marqo/marqo-ecommerce-embeddings-L', local_dir='/src/weights/marqo', token=os.environ['HF_TOKEN'])"
+      mounts:
+        - type: secret
+          id: HF_TOKEN
+          target: /run/secrets/HF_TOKEN
+
+predict: "predict.py:Predictor"
