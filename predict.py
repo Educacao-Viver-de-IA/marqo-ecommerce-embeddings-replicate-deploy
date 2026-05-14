@@ -39,45 +39,52 @@ class Predictor(BasePredictor):
         except Exception as e:
             print(f"[setup] err: {e}", flush=True)
 
+        # Strategy: usar open_clip com path explícito ao open_clip_pytorch_model.bin
+        # e carregar arch do open_clip_config.json. Evita "hf-hub:" prefix que tenta rede.
         try:
-            # Tenta carregar via transformers (mais simples). Marqo é compatível com SigLIP
-            from transformers import AutoModel, AutoProcessor
-            print(f"[setup] loading via transformers AutoProcessor + AutoModel...", flush=True)
+            import open_clip
+            import json as _json
+            cfg_path = os.path.join(WEIGHTS_DIR, "open_clip_config.json")
+            weights_path = os.path.join(WEIGHTS_DIR, "open_clip_pytorch_model.bin")
+            if not os.path.exists(cfg_path):
+                raise FileNotFoundError(f"open_clip_config.json not in {WEIGHTS_DIR}")
+            with open(cfg_path) as f:
+                oc_cfg = _json.load(f)
+            print(f"[setup] open_clip_config keys: {list(oc_cfg.keys())}", flush=True)
             sys.stdout.flush()
-            self.processor = AutoProcessor.from_pretrained(WEIGHTS_DIR, local_files_only=True, trust_remote_code=True)
-            self.model = AutoModel.from_pretrained(
-                WEIGHTS_DIR, local_files_only=True,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                trust_remote_code=True,
+
+            # marqo-fashionSigLIP é variante específica do open_clip
+            # Tenta construir do config
+            model_cfg = oc_cfg.get("model_cfg", oc_cfg)
+            preprocess_cfg = oc_cfg.get("preprocess_cfg", {})
+
+            # Try via factory direct path
+            self.model = open_clip.create_model("ViT-L-14", pretrained=None)
+            # Load custom weights
+            state = torch.load(weights_path, map_location="cpu", weights_only=False)
+            missing, unexpected = self.model.load_state_dict(state, strict=False)
+            print(f"[setup] open_clip state_dict load: {len(missing)} missing, {len(unexpected)} unexpected", flush=True)
+
+            self.tokenizer = open_clip.get_tokenizer("ViT-L-14")
+            # Build preprocess transform from config
+            self.preprocess = open_clip.image_transform(
+                image_size=preprocess_cfg.get("size", 224),
+                is_train=False,
+                mean=preprocess_cfg.get("mean"),
+                std=preprocess_cfg.get("std"),
             )
             self.model.eval()
             if torch.cuda.is_available():
                 self.model = self.model.cuda()
-            print(f"[setup] DONE via transformers (t={time.time()-t0:.1f}s)", flush=True)
-            self.backend = "transformers"
+            self.backend = "open_clip"
+            print(f"[setup] DONE via open_clip (t={time.time()-t0:.1f}s)", flush=True)
             sys.stdout.flush()
         except Exception as e:
-            print(f"[setup] transformers failed ({type(e).__name__}: {e}), tentando open_clip...", flush=True)
+            import traceback
+            print(f"[setup] FATAL open_clip: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
             sys.stdout.flush()
-            try:
-                import open_clip
-                # Marqo SigLIP via open_clip
-                self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                    "hf-hub:Marqo/marqo-ecommerce-embeddings-L",
-                    cache_dir=WEIGHTS_DIR,
-                )
-                self.tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-ecommerce-embeddings-L")
-                self.model.eval()
-                if torch.cuda.is_available():
-                    self.model = self.model.cuda()
-                self.backend = "open_clip"
-                print(f"[setup] DONE via open_clip (t={time.time()-t0:.1f}s)", flush=True)
-            except Exception as e2:
-                import traceback
-                print(f"[setup] FATAL: {type(e2).__name__}: {e2}", flush=True)
-                traceback.print_exc()
-                sys.stdout.flush()
-                self.setup_error = f"setup failed: {e2}"
+            self.setup_error = f"setup failed: {e}"
 
     def predict(
         self,
